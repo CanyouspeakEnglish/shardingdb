@@ -1,0 +1,231 @@
+package com.p4.bank.mybatisconfig;
+
+import com.p4.bank.utilnew.MybatisSubmeterUtils;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang.StringUtils;
+import org.apache.ibatis.mapping.*;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.ObjectUtils;
+
+import java.lang.reflect.Field;
+import java.util.*;
+
+/**
+ * @author lzx
+ * mappedStatement包装类
+ */
+@Slf4j
+public class MappedStatementWraper {
+
+    private MappedStatement mappedStatement;
+
+    private BoundSql boundSql;
+
+    private String sql;
+
+    private Set<Object> resolve = new HashSet<Object>();
+
+    public MappedStatementWraper(MappedStatement mappedStatement, BoundSql boundSql, String sql) {
+        this.mappedStatement = mappedStatement;
+        this.boundSql = boundSql;
+        this.sql = sql;
+    }
+
+    public class BoundSqlSqlSource implements SqlSource {
+        private BoundSql boundSql;
+        public BoundSqlSqlSource(BoundSql boundSql) {
+            this.boundSql = boundSql;
+        }
+        @Override
+        public BoundSql getBoundSql(Object parameterObject) {
+            return boundSql;
+        }
+    }
+
+    /**
+     * 包装
+     * @return
+     */
+    public MappedStatement wraper(){
+        this.encryption();
+        BoundSql newBoundSql = new BoundSql(mappedStatement.getConfiguration(), sql,
+                boundSql.getParameterMappings(), boundSql.getParameterObject());
+        MappedStatement newMs = this.copyFromMappedStatement(mappedStatement, new BoundSqlSqlSource(newBoundSql));
+        this.handle(newBoundSql);
+        this.resolve.clear();
+        return newMs;
+    }
+
+    /**
+     * 数据交换
+     * @param ms
+     * @param newSqlSource
+     * @return
+     */
+    private MappedStatement copyFromMappedStatement(MappedStatement ms, SqlSource newSqlSource) {
+        MappedStatement.Builder builder = new MappedStatement.Builder(ms.getConfiguration(), ms.getId(), newSqlSource, ms.getSqlCommandType());
+        builder.resource(ms.getResource());
+        builder.fetchSize(ms.getFetchSize());
+        builder.statementType(ms.getStatementType());
+        builder.keyGenerator(ms.getKeyGenerator());
+        if (ms.getKeyProperties() != null && ms.getKeyProperties().length > 0) {
+            builder.keyProperty(ms.getKeyProperties()[0]);
+        }
+        builder.timeout(ms.getTimeout());
+        builder.parameterMap(ms.getParameterMap());
+        builder.resultMaps(ms.getResultMaps());
+        builder.resultSetType(ms.getResultSetType());
+        builder.cache(ms.getCache());
+        builder.flushCacheRequired(ms.isFlushCacheRequired());
+        builder.useCache(ms.isUseCache());
+        return builder.build();
+    }
+
+    private void handle(BoundSql newBoundSql){
+        for (ParameterMapping mapping : boundSql.getParameterMappings()) {
+            String prop = mapping.getProperty();
+            if (boundSql.hasAdditionalParameter(prop)) {
+                newBoundSql.setAdditionalParameter(prop, boundSql.getAdditionalParameter(prop));
+            }
+        }
+    }
+
+    /**
+     * 对应字段进行入库前加密
+     * 执行前只是针对于insert 和 update
+     */
+    private void encryption(){
+        if(mappedStatement.getSqlCommandType() == SqlCommandType.INSERT ||
+                mappedStatement.getSqlCommandType() == SqlCommandType.UPDATE||
+                mappedStatement.getSqlCommandType() == SqlCommandType.SELECT){
+            Set<String> encryptionField = MybatisSubmeterUtils.getEncryptionFields();
+            Object parameterObject = boundSql.getParameterObject();
+            if(parameterObject == null){
+                return;
+            }
+            if(parameterObject instanceof Collection){
+                encryptionCollection(encryptionField, parameterObject);
+                return;
+            }
+            if(parameterObject.getClass().isArray()){
+                encryptionArray(encryptionField, parameterObject);
+                return;
+            }
+            if(parameterObject instanceof Object){
+                encryptionObject(encryptionField, parameterObject);
+                return;
+            }
+        }
+    }
+
+    private void encryptionArray(Set<String> encryptionField, Object parameterObject) {
+        Object[] array = (Object[]) parameterObject;
+        if(ArrayUtils.isNotEmpty(array)){
+            for (Object parameterObjects : array) {
+                encryptionObject(encryptionField,parameterObjects);
+            }
+        }
+    }
+
+    private void encryptionCollection(Set<String> encryptionField, Object parameterObject) {
+        Collection collection = (Collection) parameterObject;
+        if(!CollectionUtils.isEmpty(collection)){
+            for (Object parameterObjects : collection) {
+                encryptionObject(encryptionField,parameterObjects);
+            }
+        }
+    }
+
+    private void encryptionObject(Set<String> encryptionField, Object parameterObject) {
+        if(parameterObject instanceof Map){
+            encryptionMap(encryptionField, (Map) parameterObject);
+        }else {
+            doEncryptionObject(encryptionField, parameterObject);
+        }
+    }
+
+    private void doEncryptionObject(Set<String> encryptionField, Object parameterObject) {
+
+        Class param = parameterObject.getClass();
+        List objectAttributeNames = DataDecryptionProcess.getObjectAttributeNames(param);
+        for (String field : encryptionField) {
+            if(!objectAttributeNames.contains(field)){
+                continue;
+            }
+            Field fieldValue = null;
+            try {
+
+                fieldValue = param.getDeclaredField(field);
+                fieldValue.setAccessible(true);
+                Object value = fieldValue.get(parameterObject);
+                String key = parameterObject.hashCode()+"_"+field;
+                if(!ObjectUtils.isEmpty(value) && !resolve.contains(key)){
+                    resolve.add(key);
+                    String string = String.valueOf(value);
+                    EncryptionHandle encryptionHandle = MybatisSubmeterUtils.getEncryptionHandle(field);
+                    if(StringUtils.isNumeric(string) || (string.length()>3 && StringUtils.isNumeric(string.substring(0,3)))){
+                        String encryption = encryptionHandle.encryption(String.valueOf(value));
+                        fieldValue.set(parameterObject, encryption);
+                    }
+                }
+            } catch (Exception e) {
+                log.error("encryption parameterObject error={}",e);
+            }
+        }
+    }
+
+    private void encryptionMap(Set<String> encryptionField, Map parameterObject) {
+        Map<String,Object> parameterMap = parameterObject;
+        if(parameterMap == null){
+            throw new IllegalArgumentException("parameterMap is null");
+        }
+        Set<String> strings = parameterMap.keySet();
+        for (String field : encryptionField) {
+            Object value = null;
+            if(strings.contains(field)){
+                value = parameterMap.get(field);
+            }else {
+                Collection<Object> values = parameterMap.values();
+                encryptionCollectionString(field, values);
+            }
+            String key = parameterObject.hashCode()+"_"+field;
+            if(!ObjectUtils.isEmpty(value) && !resolve.contains(key)){
+                EncryptionHandle encryptionHandle = MybatisSubmeterUtils.getEncryptionHandle(field);
+                String encryption = null;
+                try {
+                    resolve.add(key);
+                    String string = String.valueOf(value);
+                    if(StringUtils.isNumeric(string) || (string.length()>3 && StringUtils.isNumeric(string.substring(0,3)))){
+                        encryption = encryptionHandle.encryption(String.valueOf(value));
+                        parameterMap.put(field,encryption);
+                    }
+                } catch (Exception e) {
+                    log.error("encryption parameterMap error={}",e);
+                }
+            }
+        }
+    }
+
+    private void encryptionCollectionString(String field, Collection<Object> values) {
+         Set<String> set= new HashSet<String>();
+        set.add(field);
+        for (Object value : values) {
+            if(value == null){
+                continue;
+            }
+            if(value instanceof Collection){
+                encryptionCollection(set, value);
+                continue;
+            }
+            if(value.getClass().isArray()){
+                encryptionArray(set, value);
+                continue;
+            }
+            if(value instanceof Object){
+                encryptionObject(set, value);
+                continue;
+            }
+        }
+    }
+}

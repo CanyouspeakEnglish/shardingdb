@@ -1,0 +1,1 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=com.p4.bank.mybatisconfig.MybatisInterceptorConfig

@@ -1,0 +1,165 @@
+package com.p4.bank.mybatisconfig;
+
+import com.p4.bank.utilnew.MybatisSubmeterUtils;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang.StringUtils;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.ObjectUtils;
+
+import java.lang.reflect.Field;
+import java.text.SimpleDateFormat;
+import java.util.*;
+
+/**
+ * @author lzx
+ * 数据解密处理
+ */
+public class DataDecryptionProcess {
+    /**
+     * 需要解密字段载体
+     */
+    private Object proceed;
+
+    private Date date;
+
+    private boolean skip = false;
+
+    private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+    public DataDecryptionProcess(Object proceed) {
+        this.proceed = proceed;
+        this.date = new Date();
+    }
+
+    public Object process() throws Exception {
+        this.doProcess();
+        return this.proceed;
+    }
+
+    private void doProcess() throws Exception {
+        if(proceed instanceof Collection){
+            doProcessCollection(proceed);
+            return;
+        }
+        if(proceed.getClass().isArray()){
+            doProcessArray(proceed);
+            return;
+        }
+        if(proceed instanceof Object){
+            doProcessObject(proceed);
+            return;
+        }
+    }
+
+    private void doProcessObject(Object proceed) throws Exception {
+        if(proceed instanceof Map){
+            doProcessObjectMap((Map)proceed);
+        }else {
+            doProcessObjectObject(proceed);
+        }
+
+    }
+
+    private void doProcessObjectObject(Object proceed) throws Exception {
+        if(ObjectUtils.isEmpty(proceed)){
+            return;
+        }
+        for (String encryptionField : MybatisSubmeterUtils.getEncryptionFields()) {
+            EncryptionEntity encryptionEntity = MybatisSubmeterUtils.getEncryptionEntity(encryptionField);
+            if("Y".equals(encryptionEntity.getIsDecryption()) && StringUtils.isBlank(encryptionEntity.getMybatisInterceptorConfig().getOnlineCutOffTime())){
+                return;
+            }
+            if("Y".equals(encryptionEntity.getIsDecryption()) && sdf.parse(encryptionEntity.getMybatisInterceptorConfig().getOnlineCutOffTime()).compareTo(date) > 0){
+                skip = true;
+                return;
+            }
+            Class param = proceed.getClass();
+            List objectAttributeNames = getObjectAttributeNames(param);
+            if(objectAttributeNames.contains(encryptionField)){
+                Field fieldValue = param.getDeclaredField(encryptionField);
+                fieldValue.setAccessible(true);
+                Object value = fieldValue.get(proceed);
+                if(!ObjectUtils.isEmpty(value)){
+                    String string = value.toString();
+                    String decrypt = getStringValue(encryptionField, encryptionEntity, string);
+                    fieldValue.set(proceed,decrypt);
+                }
+            }
+        }
+    }
+
+    private void doProcessObjectMap(Map<String,Object> proceed) throws Exception {
+        if(ObjectUtils.isEmpty(proceed)){
+            return;
+        }
+        for (String encryptionField : MybatisSubmeterUtils.getEncryptionFields()) {
+            EncryptionEntity encryptionEntity = MybatisSubmeterUtils.getEncryptionEntity(encryptionField);
+            if("Y".equals(encryptionEntity.getIsDecryption()) && StringUtils.isBlank(encryptionEntity.getMybatisInterceptorConfig().getOnlineCutOffTime())){
+                return;
+            }
+            if("Y".equals(encryptionEntity.getIsDecryption()) && sdf.parse(encryptionEntity.getMybatisInterceptorConfig().getOnlineCutOffTime()).compareTo(date) > 0){
+                skip = true;
+                return;
+            }
+            Object value = proceed.get(encryptionField);
+            if(!ObjectUtils.isEmpty(value)){
+                String string = value.toString();
+                String decrypt = getStringValue(encryptionField, encryptionEntity, string);
+                proceed.put(encryptionField,decrypt);
+            }
+        }
+    }
+
+    private String getStringValue(String encryptionField, EncryptionEntity encryptionEntity, String string) throws Exception {
+        String decrypt ="";
+        EncryptionHandle encryptionHandle = MybatisSubmeterUtils.getEncryptionHandle(encryptionField);
+        if("N".equals(encryptionEntity.getIsDecryption()) ){
+            decrypt = string;
+            if(StringUtils.isNumeric(string)){
+                decrypt = encryptionHandle.encryption(string);
+            }
+        }else {
+            decrypt = encryptionHandle.decrypt(string);
+        }
+        return decrypt;
+    }
+
+    private void doProcessArray(Object proceed) throws Exception {
+        Object[] array = (Object[]) proceed;
+        if(ArrayUtils.isNotEmpty(array)){
+            for (Object parameterObjects : array) {
+                if (skip){
+                    return;
+                }
+                doProcessObject(parameterObjects);
+            }
+        }
+    }
+
+    private void doProcessCollection(Object proceed) throws Exception {
+        Collection collection = (Collection) proceed;
+        if(!CollectionUtils.isEmpty(collection)){
+            for (Object parameterObjects : collection) {
+                if (skip){
+                    return;
+                }
+                doProcessObject(parameterObjects);
+            }
+        }
+    }
+
+    public static <T> List<String> getObjectAttributeNames(Class<T> clazzT) {
+        List<String> list = new LinkedList<String>();
+        try {
+            Class clazz = Class.forName(clazzT.getName());
+            Field[] fields = clazz.getDeclaredFields();
+            for (Field f : fields) {
+                list.add(f.getName());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+}

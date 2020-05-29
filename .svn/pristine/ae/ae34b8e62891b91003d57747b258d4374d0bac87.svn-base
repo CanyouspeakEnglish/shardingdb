@@ -1,0 +1,43 @@
+package com.p4.bank.mybatisconfig;
+
+import com.p4.bank.utilnew.TableInitializationUtils;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class MybatisInterceptorConfig {
+    /**
+     * 分表配置
+     */
+    @Value("${table_submeter_entitys}")
+    private String tableSubmeterEntitys;
+    /**
+     * 加密字段
+     */
+    @Value("${encrypted_field}")
+    private String encryptedFields;
+    /**
+     * 上线截止时间
+     */
+    @Value("${online_cut_off_time}")
+    private String onlineCutOffTime;
+
+    /**
+     * 解析类型扩展
+     */
+    @Value("${expand_parsing}")
+    private String expandParsings;
+    @Bean
+    public String myInterceptor(SqlSessionFactory sqlSessionFactory) {
+        new TableInitializationUtils(tableSubmeterEntitys,encryptedFields,expandParsings,this);
+        sqlSessionFactory.getConfiguration().addInterceptor(new MybatisExecutorInterceptor());
+        sqlSessionFactory.getConfiguration().addInterceptor(new MybatisResultSetInterceptor());
+        return "interceptor";
+    }
+
+    public String getOnlineCutOffTime() {
+        return onlineCutOffTime;
+    }
+}

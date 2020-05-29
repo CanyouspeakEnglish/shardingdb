@@ -1,0 +1,126 @@
+package com.p4.bank.mybatisconfig;
+
+import com.p4.bank.mybatisconfig.parse.TableParseHandle;
+import com.p4.bank.mybatisconfig.parse.type.TableParseType;
+import com.p4.bank.utilnew.GetTableNames;
+import com.p4.bank.utilnew.MybatisSubmeterUtils;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang.StringUtils;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.ObjectUtils;
+
+import java.lang.reflect.Field;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * @author lzx
+ * sql 解析处理
+ */
+public class SqlParse {
+
+    private Object parameterObject;
+
+    private String sql;
+
+    private boolean skip = false;
+
+    public SqlParse(Object parameterObject, String sql) {
+        this.parameterObject = parameterObject;
+        this.sql = sql;
+    }
+
+    public String sqlHandle() throws Exception {
+        return this.doSqlHandle();
+    }
+
+    private String doSqlHandle() throws Exception {
+        Set<String> tableNames = GetTableNames.getTableNames(this.sql);
+        for (String table : tableNames) {
+        if (sql.contains(table) || sql.contains(table = table.toUpperCase())){
+            TableSubmeterEntity tableSubmeterEntity = MybatisSubmeterUtils.getTableSubmeterEntity(table.toLowerCase());
+            if(tableSubmeterEntity != null && StringUtils.isNotEmpty(tableSubmeterEntity.getField())){
+                String field = tableSubmeterEntity.getField();
+                //批量单独处理
+                    if(parameterObject instanceof Collection){
+                        sqlParseCollection(parameterObject,table,field);
+                        continue;
+                    }
+                    if(parameterObject.getClass().isArray()){
+                        sqlParseArray(parameterObject,table,field);
+                        continue;
+                    }
+                    if(parameterObject instanceof Object){
+                        sqlParseObject(table, field,parameterObject);
+                        continue;
+                    }
+                }
+                //等于null 需要有特殊处理 可以选择其他的时间 或者 调用远程时间
+            }
+        }
+        return sql;
+    }
+
+    private void sqlParseArray(Object parameterObject, String table, String field) throws Exception {
+        Object[] array = (Object[]) parameterObject;
+        if(!ArrayUtils.isNotEmpty(array)){
+            for (Object parameterObjects : array) {
+                sqlParseObject(table,field,parameterObjects);
+                if (skip){
+                    break;
+                }
+            }
+            skip = false;
+        }
+    }
+
+    private void sqlParseCollection(Object parameterObject, String table, String field) throws Exception {
+        Collection collection = (Collection) parameterObject;
+        if(!CollectionUtils.isEmpty(collection)){
+            for (Object parameterObjects : collection) {
+                sqlParseObject(table,field,parameterObjects);
+                if (skip){
+                    break;
+                }
+            }
+            skip = false;
+        }
+    }
+
+    private void sqlParseObject(String table, String field, Object parameterObjects) throws Exception {
+        if(parameterObjects instanceof Map){
+            doSqlParseMap(table,  field,parameterObjects);
+        }else {
+            doSqlParseObject(table, field,parameterObjects);
+        }
+    }
+
+    private void doSqlParseMap(String table, String field, Object parameterObjects) throws Exception {
+        Map<String,Object> map= (Map)parameterObjects;
+        Object value = map.get(field);
+        sqlParseObject(table, value);
+    }
+
+    private void doSqlParseObject(String table, String field, Object parameterObjects) throws Exception {
+        Class param = parameterObjects.getClass();
+        Field fieldValue = param.getDeclaredField(field);
+        fieldValue.setAccessible(true);
+        Object value = fieldValue.get(parameterObjects);
+        sqlParseObject(table, value);
+    }
+
+    private void sqlParseObject(String table, Object value) throws Exception {
+        if(!ObjectUtils.isEmpty(value)){
+            TableSubmeterEntity tableSubmeterEntity = MybatisSubmeterUtils.getTableSubmeterEntity(table.toLowerCase());
+            if(tableSubmeterEntity != null){
+                TableParseHandle tableParseHandle = MybatisSubmeterUtils.getTableParseHandle(tableSubmeterEntity.getParseType());
+                String tableNameNew = tableParseHandle.getTableNameSubmeter(table,value);
+                sql = sql.replace(table,tableNameNew);
+                skip = true;
+            }
+
+        }
+    }
+
+}
